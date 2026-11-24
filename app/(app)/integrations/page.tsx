@@ -37,6 +37,7 @@ export default async function IntegrationsPage({ searchParams }: { searchParams:
         Approved documents are sent automatically. Nothing leaves Fieldwise until a person approves it, and a correction after approval updates what was sent instead of sending it twice.
       </p>
       {sp.error && <p className="error card">{sp.error}</p>}
+      {process.env.VERCEL === "1" && <p className="card small" style={{ borderStyle: "dashed" }}><strong>About this hosted demo:</strong> it runs on several servers that each keep their own copy of the data, so a connection or sync you just made may not appear on the next page you load. Run the app locally for the full walkthrough; the integration code is the same.</p>}
       {sp.done && <p className="ok-text small">{sp.done}</p>}
 
       <IntegrationCard p={quickbooks} c={qbo} ownerId={org.id} describeJob={describe}>

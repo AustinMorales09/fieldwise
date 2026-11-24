@@ -17,6 +17,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <>
               <Link href="/documents">Documents{waiting ? <span className="count-badge">{waiting}</span> : null}</Link>
               <Link href="/templates">Templates</Link>
+              <Link href="/integrations">Integrations</Link>
               <Link href="/settings">Settings</Link>
               <form action={logout}><button className="link">Log out</button></form>
             </>

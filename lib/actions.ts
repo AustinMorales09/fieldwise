@@ -7,6 +7,7 @@ import { MAX_BYTES, myOrg, ownDoc, ownTemplate, sniff, storeFile } from "./acces
 import { normalize, parseFieldLines, runChecks, STARTERS, type Meta, type Row, type Value } from "./fields";
 import { processDocument, siblings, toTemplate } from "./process";
 import { today } from "./time";
+import { documentApproved } from "./integrations";
 
 const str = (f: FormData, k: string) => String(f.get(k) ?? "").trim();
 const q = (m: string) => encodeURIComponent(m);
@@ -189,6 +190,8 @@ export async function review(form: FormData) {
   );
   if (blocked) redirect(`/documents/${doc.id}?error=${q("Fill in the required fields before approving")}`);
   if (status !== "approved") redirect(`/documents/${doc.id}?saved=${Date.now()}`);
+  // Send to connected systems after the response (QuickBooks, Excel). Failures are retried and shown on the Integrations page.
+  await documentApproved(org.id, doc.id);
   // After approving, go straight to the next document waiting for review.
   const next = db.prepare("SELECT id FROM documents WHERE org_id = ? AND status = 'needs_review' ORDER BY id LIMIT 1").get(org.id) as { id: number } | undefined;
   redirect(next ? `/documents/${next.id}?approved=${doc.id}` : `/documents?approved=${doc.id}`);

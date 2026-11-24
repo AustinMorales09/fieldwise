@@ -91,7 +91,7 @@ export default async function Documents({ searchParams }: { searchParams: Promis
           <h2>Export</h2>
           {templates.map((t) => (
             <p key={t.id} className="small" style={{ margin: "4px 0" }}>
-              <strong>{t.name}</strong>: <a href={`/export/${t.id}`}>approved documents (CSV)</a>{JSON.parse(t.table_cols).length ? <> · <a href={`/export/${t.id}?what=rows`}>{t.table_label.toLowerCase() || "rows"} (CSV)</a></> : null}
+              <strong>{t.name}</strong>: approved documents (<a href={`/export/${t.id}`}>CSV</a> · <a href={`/export/${t.id}?format=xlsx`}>Excel</a>){JSON.parse(t.table_cols).length ? <> · {t.table_label.toLowerCase() || "rows"} (<a href={`/export/${t.id}?what=rows`}>CSV</a> · <a href={`/export/${t.id}?what=rows&format=xlsx`}>Excel</a>)</> : null}
             </p>
           ))}
           <p className="small muted">Only approved documents are exported, so nothing unreviewed reaches your books.</p>

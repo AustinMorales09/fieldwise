@@ -83,11 +83,7 @@ With Claude on, uploaded documents are sent to Anthropic's API to be read. The S
   - **Duplicates:** flagged.
   - **Claude path, mocked client:** a PDF sent as a base64 document block, an image as an image block, the schema keys matching the template, and an evidence snippet verified or flagged. A refusal on a photo ends as Failed.
   - **Real SDK with no credentials:** it's detected and label matching is used.
-  - Run them from this folder; the copy step adds `.ts` to the relative imports:
-
-```bash
-mkdir -p .unit/lib && for f in db fields pdftext rules claude process time; do sed -E 's#from "\./([a-z-]+)"#from "./\1.ts"#g' lib/$f.ts > .unit/lib/$f.ts; done && (cd .unit && DATA_DIR="$PWD/data" node run.mjs); rm -rf .unit/lib .unit/data
-```
+  - Run them with `npm test` (`scripts/test.mjs` copies `lib/` with explicit `.ts` imports into a scratch folder and runs every file in `tests/` against a throwaway database).
 
 - **Browser, end to end, in label-matching mode** (no API key on the build machine):
   - **Samples:** four sample documents extracted.
@@ -103,14 +99,61 @@ mkdir -p .unit/lib && for f in db fields pdftext rules claude process time; do s
   - **Checks:** no horizontal scroll at phone width, no console or server errors, and `next build` passes.
 - **Not verified:** a live Claude call, and therefore reading of real scans and photos. The request typechecks against the installed SDK (1.8.0) and is exercised with a mocked client, but no real API request was made. The first run with a real key should be watched.
 
+## Integrations: QuickBooks Online and Excel
+
+Approved documents are sent on their own; nothing leaves Fieldwise before a person approves it. **Integrations** in the nav connects them, live or with the simulator.
+
+- **QuickBooks Online** (`lib/integrations/quickbooks.ts`): an approved invoice becomes a **Bill**.
+  - **Vendor:** found by exact display name, or created.
+  - **Lines:** line items are used when they add up to the approved total, with tax as its own line. Otherwise the bill gets one line for the total, so QuickBooks never disagrees with what the reviewer approved.
+  - **Duplicates:** before creating, it looks for a bill with the same vendor and invoice number and links that one instead. The create itself carries Intuit's `requestid`, so a retry after a timeout can't make two bills.
+  - **Corrections:** a correction after approval updates the same bill, using the current `SyncToken`; a stale-object error is re-read and retried once.
+  - **Setup:** you choose the expense account and which templates are sent. Refresh tokens rotate on every refresh and are saved each time.
+- **Excel on OneDrive** (`lib/integrations/excel.ts`, Microsoft Graph, OAuth with PKCE): on first connect, Fieldwise uploads `Fieldwise/Fieldwise exports.xlsx`. Each template gets a worksheet with an Excel table, created when its first document is sent.
+  - **Finding the row:** each send looks up the document's row by document number (people sort and filter sheets, so positions aren't trusted) and updates it, or appends a row.
+  - **No duplicates:** a retried append finds its own row instead of adding a second one.
+  - **Formula injection:** text that Excel would run as a formula is prefixed with an apostrophe.
+- **.xlsx download, no account needed:** every template's approved documents also download as `.xlsx` from the Documents page. `lib/integrations/xlsx.ts` writes Office Open XML directly: numeric cells, a bold frozen header, and strings that can never run as formulas.
+- **Per-document status:** each document shows where it was sent ("Bill 142 updated · row 3 on Invoice updated"). The Integrations page lists recent jobs and the log, and in simulator mode shows what the simulated company or workbook now holds.
+
+| Env var | Effect |
+|---|---|
+| `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET` | Live QuickBooks connection (an Intuit developer app; redirect URI `<APP_URL>/integrations/quickbooks/callback`). |
+| `QBO_ENV` | `production` for real companies; anything else uses Intuit's sandbox companies. |
+| `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_TENANT` | Live Excel connection (an Entra app with `Files.ReadWrite` and `offline_access`; tenant defaults to `common`). |
+| `INTEGRATIONS_KEY` | Key for sealing stored credentials (otherwise a key file is created in the data folder). |
+| `APP_URL` | Public base URL for OAuth redirect URIs. |
+
+### How the integration layer works (`lib/integrations/core.ts`)
+
+The same small core sits under every provider:
+
+- **Credentials sealed at rest.** Tokens and API secrets are stored with AES-256-GCM, keyed by `INTEGRATIONS_KEY` (or a random key file next to the database). Disconnecting deletes them.
+- **OAuth done properly.** The state parameter is single-use, expires after 10 minutes and is bound to the person who started the flow. PKCE is used where the provider supports it.
+- **Token refresh.** Tokens refresh shortly before they expire, and once more on a 401. Parallel callers share a single refresh, because providers that rotate refresh tokens lock you out if two refreshes race.
+- **Retries that can't duplicate.** A 429 waits for `Retry-After`, and other 5xx errors back off. A POST is retried only when it is idempotent (an idempotency key, upsert or client-chosen id) or when the server said 429. Bad data fails right away with the reason instead of retrying.
+- **An outbox.** Work is queued in `integration_jobs`, keyed so the same work collapses into one job, and runs after the response has been sent (Next.js `after`). Pages never wait on a third-party API. Failed jobs show their error and can be retried.
+- **Links.** `integration_links` records which remote record each local record became, plus a hash of the values last synced. That is what makes re-syncs no-ops and lets two-way sync tell who changed what.
+- **A built-in simulator for every provider** (`lib/integrations/sim-*.ts`). "Try it with the simulator" connects without an account. The integration code is identical in both modes; only the fetch function differs. Each simulator speaks the provider's request and response shapes, validation and error codes. Every 6th call gets a 429 so the retry path runs for real, and "Expire the access token" exercises refresh-on-401.
+
+**Verified** (`npm test` runs `tests/integrations.mjs`, 14 checks, all against the simulators):
+- **Core:** sealing and tamper detection; retry rules (429 with `Retry-After`, 503, no blind POST retry); one shared refresh for parallel callers; a revoked token leads to "reconnect"; OAuth state is single-use and bound to its owner.
+- **QuickBooks:** bill mapping; connect → company and accounts → vendor and bill; a correction updates the same bill (SyncToken 0 → 1) and an unchanged one is a no-op; an existing bill is linked, not duplicated; an expired token is refreshed and the refresh token rotates; a bad document fails once, with the reason, without marking the connection broken.
+- **Excel:** formula defusing; row lookup after sorting; workbook and table creation; update in place; a lost link doesn't duplicate the row.
+- **.xlsx:** a valid zip with matching CRCs. Opened in desktop Excel: two sheets, a bold header, numbers stored as numbers, and `=HYPERLINK(...)` left as plain text.
+- **In the browser, simulator mode:** connected both. Sent two approved invoices, which became two bills (vendors created, line items and tax) and two rows. Corrected one invoice's tax and total and re-approved it: the same bill moved to SyncToken 1 and the same row was updated.
+
+**Not verified:** calls to the real Intuit and Microsoft APIs, because no developer accounts were connected. The requests follow the documented endpoints and shapes (QuickBooks v3 with minorversion 75, Graph v1.0 workbook APIs), but a first live run should be watched, especially worksheet and table creation in Graph.
+
 ## Stack
 
-Next.js 16 · `node:sqlite` · `@anthropic-ai/sdk` + `zod` · local file storage · plain CSS.
+Next.js 16 · `node:sqlite` · `@anthropic-ai/sdk` + `zod` · QuickBooks Online and Microsoft Graph over plain `fetch` · local file storage · plain CSS.
 
 ## Next steps toward a paid product
 
 - A background queue with the Message Batches API for bulk uploads (extraction currently runs inline during upload)
-- Email-in (forward invoices to an address), plus webhook/API output and QuickBooks / Xero push
+- Email-in (forward invoices to an address), plus webhook/API output and a Xero push alongside QuickBooks
+- QuickBooks: receipts as Purchases (expenses) and class/location tracking
 - Click-to-highlight: show where on the page each value was read
 - Per-template accuracy from reviewer corrections, and auto-approval for document types that are consistently clean
 - Multi-page splitting (one PDF holding several invoices) and vendor-specific hints learned from corrections

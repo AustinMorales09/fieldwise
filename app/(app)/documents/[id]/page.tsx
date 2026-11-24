@@ -4,6 +4,8 @@ import { deleteDoc, reextract, review } from "@/lib/actions";
 import { show, type Check, type Meta, type Row, type Value } from "@/lib/fields";
 import { toTemplate } from "@/lib/process";
 import { fmtStamp } from "@/lib/time";
+import { connections, providerById } from "@/lib/integrations";
+import { getLink, jobFor } from "@/lib/integrations/core";
 
 type SP = { error?: string; saved?: string; approved?: string; reextracted?: string };
 const INPUT: Record<string, { type: string; step?: string; inputMode?: "decimal" }> = { date: { type: "date" }, money: { type: "text", inputMode: "decimal" }, number: { type: "text", inputMode: "decimal" }, text: { type: "text" } };
@@ -36,6 +38,7 @@ export default async function DocPage({ params, searchParams }: { params: Promis
       {sp.saved && <p className="ok-text small">Saved, and the checks were re-run on your values.</p>}
       {sp.reextracted && <p className="ok-text small">Extracted again.</p>}
       {doc.error && <p className="card small status-warn">{doc.error}</p>}
+      <SyncStatus orgId={org.id} docId={doc.id} approved={doc.status === "approved"} />
 
       <div className="review">
         <div className="card">
@@ -115,5 +118,26 @@ export default async function DocPage({ params, searchParams }: { params: Promis
         </div>
       </div>
     </main>
+  );
+}
+
+/** Where this document was sent, per connected integration. */
+function SyncStatus({ orgId, docId, approved }: { orgId: number; docId: number; approved: boolean }) {
+  const conns = connections(orgId);
+  if (!conns.length) return null;
+  return (
+    <p className="small" style={{ margin: "0 0 10px" }}>
+      {conns.map((c, i) => {
+        const name = providerById(c.provider)?.name.split(" (")[0] ?? c.provider;
+        const job = jobFor(orgId, c.provider, "push_doc", docId);
+        const link = getLink(orgId, c.provider, "document", docId);
+        const text = job?.status === "failed" ? <span className="status-err">failed: {job.last_error}</span>
+          : job && job.status !== "done" ? <span className="status-warn">sending…</span>
+          : job?.result?.startsWith("skipped") ? <span className="muted">{job.result.replace("skipped: ", "not sent: ")}</span>
+          : link ? <span className="status-ok">{job?.result ?? "sent"}</span>
+          : <span className="muted">{approved ? "not sent yet" : "sent after approval"}</span>;
+        return <span key={c.provider}>{i ? " · " : ""}<Link href={`/integrations#${c.provider}`}>{name}</Link>: {text}</span>;
+      })}
+    </p>
   );
 }
